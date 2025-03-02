@@ -38,7 +38,7 @@ class Building extends Phaser.GameObjects.Container {
         super(scene, x, y);
         
         // Initialize properties
-        this.troops = 10;
+        this.soldiers = 10;
         this.lastUpdate = Date.now();
         this.isSelected = false;
         this.ownership = ownership;
@@ -55,20 +55,31 @@ class Building extends Phaser.GameObjects.Container {
         this.selectionRing.setVisible(false);
         this.add(this.selectionRing);
 
-        // Create troop counter text
-        this.troopText = scene.add.text(0, 0, this.troops.toString(), {
+        // Create soldier counter text
+        this.soldierText = scene.add.text(0, 0, this.soldiers.toString(), {
             fontSize: '24px',
             color: '#ffffff',
             fontFamily: 'Arial',
             resolution: 2,           // Higher resolution for sharper text
             antialias: false        // Disable antialiasing for crisp edges
         });
-        this.troopText.setOrigin(0.5);
-        this.troopText.setPosition(Math.round(this.troopText.x), Math.round(this.troopText.y)); // Ensure integer position
-        this.add(this.troopText);
+        this.soldierText.setOrigin(0.5);
+        this.soldierText.setPosition(Math.round(this.soldierText.x), Math.round(this.soldierText.y)); // Ensure integer position
+        this.add(this.soldierText);
 
         // Make building clickable for both left and right clicks
         this.building.setInteractive();
+        this.setupInteractions(scene);
+
+        // Add to scene
+        scene.add.existing(this);
+    }
+
+    setupInteractions(scene) {
+        // Remove any existing listeners first (important for scene restart)
+        this.building.removeAllListeners();
+        
+        // Add new listeners
         this.building.on('pointerdown', (pointer) => {
             if (pointer.rightButtonDown()) {
                 scene.handleRightClick(this);
@@ -76,9 +87,17 @@ class Building extends Phaser.GameObjects.Container {
                 scene.selectBuilding(this);
             }
         });
-
-        // Add to scene
-        scene.add.existing(this);
+    }
+    
+    // Override destroy method to ensure proper cleanup
+    destroy(fromScene) {
+        // Remove all listeners
+        if (this.building) {
+            this.building.removeAllListeners();
+        }
+        
+        // Call parent destroy method
+        super.destroy(fromScene);
     }
 
     getBuildingColor() {
@@ -90,12 +109,17 @@ class Building extends Phaser.GameObjects.Container {
         }
     }
 
-    update() {
+    update(time, delta, scene) {
         const now = Date.now();
         if (now - this.lastUpdate >= 1000) {  // Every second
-            if (this.ownership !== 'neutral') {  // Only non-neutral buildings generate troops
-                this.troops++;
-                this.troopText.setText(this.troops.toString());
+            if (this.ownership !== 'neutral') {  // Only non-neutral buildings generate soldiers
+                this.soldiers++;
+                this.soldierText.setText(this.soldiers.toString());
+                
+                // Update soldier counts when soldiers are generated
+                if (scene && scene.calculateSoldierCounts) {
+                    scene.calculateSoldierCounts();
+                }
             }
             this.lastUpdate = now;
         }
@@ -105,28 +129,118 @@ class Building extends Phaser.GameObjects.Container {
         this.ownership = newOwnership;
         this.isPlayerOwned = newOwnership === 'player';
         this.building.setFillStyle(this.getBuildingColor());
+        
+        // Update soldier counts when ownership changes
+        if (this.scene && this.scene.calculateSoldierCounts) {
+            this.scene.calculateSoldierCounts();
+        }
     }
 
     setSelected(selected) {
         this.isSelected = selected;
         this.selectionRing.setVisible(selected);
     }
-
-    sendTroops(targetBuilding) {
-        if (this.troops <= 0) return;
-
-        const troopsToSend = this.troops;
-        this.troops = 0;
-        this.troopText.setText('0');
-
-        return troopsToSend;
-    }
 }
 
 class MainScene extends Phaser.Scene {
     constructor() {
         super({ key: 'MainScene' });
+    }
+
+    init() {
+        // Initialize/reset all game state variables
         this.gameOver = false;
+        this.selectedBuilding = null;
+        
+        // Initialize player data with soldier tracking
+        this.players = {
+            player: {
+                id: 'player',
+                name: 'Player',
+                color: 0x4477FF,
+                soldierCount: 0
+            },
+            enemy: {
+                id: 'enemy',
+                name: 'Enemy',
+                color: 0xFF4444,
+                soldierCount: 0
+            }
+        };
+        
+        // Make sure to clear these arrays rather than reassigning them
+        if (this.activeSoldiers) {
+            // Destroy any existing soldiers
+            this.activeSoldiers.forEach(soldier => {
+                if (soldier && soldier.destroy) {
+                    soldier.destroy();
+                }
+            });
+        }
+        this.activeSoldiers = [];
+        
+        // Buildings will be recreated in create()
+        if (this.buildings) {
+            this.buildings.forEach(building => {
+                if (building && building.destroy) {
+                    building.destroy();
+                }
+            });
+        }
+        this.buildings = [];
+        
+        // Clear any existing timers or tweens
+        if (this.time) {
+            this.time.removeAllEvents();
+        }
+        if (this.tweens) {
+            this.tweens.killAll();
+        }
+    }
+
+    // Add a shutdown method to handle cleanup when the scene is stopped
+    shutdown() {
+        // Clean up any listeners that might persist
+        this.input.off('pointerdown');
+        this.input.off('pointerup');
+        
+        // Destroy all game objects
+        if (this.activeSoldiers) {
+            this.activeSoldiers.forEach(soldier => {
+                if (soldier && soldier.destroy) {
+                    soldier.destroy();
+                }
+            });
+            this.activeSoldiers = [];
+        }
+        
+        if (this.buildings) {
+            this.buildings.forEach(building => {
+                if (building && building.destroy) {
+                    building.destroy();
+                }
+            });
+            this.buildings = [];
+        }
+        
+        // Clear any timers or tweens
+        if (this.time) {
+            this.time.removeAllEvents();
+        }
+        if (this.tweens) {
+            this.tweens.killAll();
+        }
+        
+        // Clear any references
+        this.selectedBuilding = null;
+        
+        // Clean up UI elements
+        if (this.playerUI) {
+            Object.values(this.playerUI).forEach(ui => {
+                if (ui.soldierText) ui.soldierText.destroy();
+            });
+            this.playerUI = null;
+        }
     }
 
     isOverlapping(x, y, buildings) {
@@ -168,33 +282,11 @@ class MainScene extends Phaser.Scene {
         // Disable right click menu
         this.input.mouse.disableContextMenu();
 
-        // Add troop count displays
-        this.playerTroopText = this.add.text(20, 20, 'Player Troops: 40', {
-            fontSize: '24px',
-            color: '#ffffff',
-            fontFamily: 'Arial',
-            resolution: 2,
-            antialias: false
-        });
-        this.playerTroopText.setPosition(
-            Math.round(this.playerTroopText.x), 
-            Math.round(this.playerTroopText.y)
-        );
-
-        this.enemyTroopText = this.add.text(20, 50, 'Enemy Troops: 40', {
-            fontSize: '24px',
-            color: '#ffffff',
-            fontFamily: 'Arial',
-            resolution: 2,
-            antialias: false
-        });
-        this.enemyTroopText.setPosition(
-            Math.round(this.enemyTroopText.x), 
-            Math.round(this.enemyTroopText.y)
-        );
-
         // Initialize buildings array
         this.buildings = [];
+        
+        // Initialize soldiers array
+        this.activeSoldiers = [];
 
         const screenWidth = this.cameras.main.width;
         const screenHeight = this.cameras.main.height;
@@ -233,7 +325,76 @@ class MainScene extends Phaser.Scene {
         }
 
         this.selectedBuilding = null;
-        this.activeSoldiers = [];
+        
+        // Create UI for soldier counts
+        this.createSoldierCountUI();
+        
+        // Calculate initial soldier counts
+        this.calculateSoldierCounts();
+    }
+    
+    createSoldierCountUI() {
+        this.playerUI = {};
+        
+        // Create player soldier count text
+        this.playerUI.player = {
+            soldierText: this.add.text(20, 20, 'Player: 0', {
+                fontSize: '24px',
+                color: '#FFFFFF',
+                fontFamily: 'Arial',
+                resolution: 2,
+                antialias: false
+            })
+        };
+        
+        // Create enemy soldier count text
+        this.playerUI.enemy = {
+            soldierText: this.add.text(20, 60, 'Enemy: 0', {
+                fontSize: '24px',
+                color: '#FFFFFF',
+                fontFamily: 'Arial',
+                resolution: 2,
+                antialias: false
+            })
+        };
+        
+        // Set depth to ensure it's always visible
+        this.playerUI.player.soldierText.setDepth(100);
+        this.playerUI.enemy.soldierText.setDepth(100);
+    }
+    
+    calculateSoldierCounts() {
+        // Reset counts
+        this.players.player.soldierCount = 0;
+        this.players.enemy.soldierCount = 0;
+        
+        // Count soldiers in buildings
+        this.buildings.forEach(building => {
+            if (!building || !building.active) return;
+            
+            if (building.ownership === 'player') {
+                this.players.player.soldierCount += building.soldiers;
+            } else if (building.ownership === 'enemy') {
+                this.players.enemy.soldierCount += building.soldiers;
+            }
+        });
+        
+        // Count soldiers on the field
+        this.activeSoldiers.forEach(soldier => {
+            if (!soldier || !soldier.active) return;
+            
+            if (soldier.isPlayerOwned) {
+                this.players.player.soldierCount += 1;
+            } else {
+                this.players.enemy.soldierCount += 1;
+            }
+        });
+        
+        // Update UI
+        if (this.playerUI) {
+            this.playerUI.player.soldierText.setText(`Player: ${this.players.player.soldierCount}`);
+            this.playerUI.enemy.soldierText.setText(`Enemy: ${this.players.enemy.soldierCount}`);
+        }
     }
 
     showGameOverModal(isWin) {
@@ -295,8 +456,8 @@ class MainScene extends Phaser.Scene {
 
         // Add message text
         const message = isWin ? 
-            'You have conquered all enemy buildings!' : 
-            'Your forces have been eliminated!';
+            'You have captured all enemy buildings!' : 
+            'All your buildings have been captured!';
         const modalText = this.add.text(
             this.cameras.main.width / 2,
             this.cameras.main.height / 2,
@@ -379,118 +540,125 @@ class MainScene extends Phaser.Scene {
     checkGameOver() {
         if (this.gameOver) return;
 
-        let playerTroops = 0;
-        let enemyTroops = 0;
+        let playerHasBuildings = false;
+        let enemyHasBuildings = false;
 
-        // Count all troops (in buildings and in transit)
-        this.buildings.forEach(building => {
-            if (building.ownership === 'player') {
-                playerTroops += building.troops;
-            } else if (building.ownership === 'enemy') {
-                enemyTroops += building.troops;
-            }
-        });
-
-        this.activeSoldiers.forEach(soldier => {
-            if (soldier.isPlayerOwned) {
-                playerTroops++;
-            } else {
-                enemyTroops++;
-            }
-        });
+        // Check if either player has buildings
+        if (this.buildings) {
+            this.buildings.forEach(building => {
+                if (!building || !building.active) return;
+                
+                if (building.ownership === 'player') {
+                    playerHasBuildings = true;
+                } else if (building.ownership === 'enemy') {
+                    enemyHasBuildings = true;
+                }
+            });
+        }
 
         // Check win/lose conditions
-        if (playerTroops === 0) {
-            this.gameOver = true;
-            this.showGameOverModal(false); // Show lose modal
-        } else if (enemyTroops === 0) {
+        if (playerHasBuildings && !enemyHasBuildings) {
             this.gameOver = true;
             this.showGameOverModal(true); // Show win modal
+        } else if (enemyHasBuildings && !playerHasBuildings) {
+            this.gameOver = true;
+            this.showGameOverModal(false); // Show lose modal
         }
-    }
-
-    updateTroopCounts() {
-        let playerTroops = 0;
-        let enemyTroops = 0;
-
-        // Count troops in buildings
-        this.buildings.forEach(building => {
-            if (building.ownership === 'player') {
-                playerTroops += building.troops;
-            } else if (building.ownership === 'enemy') {
-                enemyTroops += building.troops;
-            }
-        });
-
-        // Count troops in transit
-        this.activeSoldiers.forEach(soldier => {
-            if (soldier.isPlayerOwned) {
-                playerTroops++;
-            } else {
-                enemyTroops++;
-            }
-        });
-
-        // Update the display
-        this.playerTroopText.setText(`Player Troops: ${playerTroops}`);
-        this.enemyTroopText.setText(`Enemy Troops: ${enemyTroops}`);
     }
 
     update(time, delta) {
         if (this.gameOver) return;
 
         // Update all buildings
-        this.buildings.forEach(building => building.update());
+        if (this.buildings) {
+            this.buildings.forEach(building => {
+                if (building && building.update) {
+                    building.update(time, delta, this);
+                }
+            });
+        }
 
-        // Update troop counts
-        this.updateTroopCounts();
+        // Update and check soldiers
+        if (this.activeSoldiers) {
+            // Create a new array for soldiers that are still active
+            const stillActiveSoldiers = [];
+            let soldierCountChanged = false;
+            
+            for (let i = 0; i < this.activeSoldiers.length; i++) {
+                const soldier = this.activeSoldiers[i];
+                
+                // Skip if soldier is undefined or has been destroyed
+                if (!soldier || !soldier.active) continue;
+                
+                try {
+                    const reachedTarget = soldier.update(time, delta);
+                    
+                    if (reachedTarget) {
+                        // Handle individual soldier arrival
+                        const targetBuilding = this.buildings.find(b => {
+                            if (!b || !b.active) return false;
+                            
+                            const dx = b.x - soldier.targetX;
+                            const dy = b.y - soldier.targetY;
+                            const distanceSquared = dx * dx + dy * dy;
+                            return distanceSquared < 2500; // 50 pixel radius check
+                        });
+                        
+                        if (targetBuilding) {
+                            if (targetBuilding.ownership === (soldier.isPlayerOwned ? 'player' : 'enemy')) {
+                                // Friendly building - add one soldier
+                                targetBuilding.soldiers++;
+                            } else {
+                                // Enemy or neutral building - subtract one soldier
+                                targetBuilding.soldiers--;
+                                // Check for capture
+                                if (targetBuilding.soldiers < 0) {
+                                    targetBuilding.setOwnership(soldier.isPlayerOwned ? 'player' : 'enemy');
+                                    targetBuilding.soldiers = Math.abs(targetBuilding.soldiers);
+                                    
+                                    // Visual feedback for capture
+                                    this.tweens.add({
+                                        targets: targetBuilding.building,
+                                        scaleX: 1.2,
+                                        scaleY: 1.2,
+                                        duration: 200,
+                                        yoyo: true,
+                                        ease: 'Quad.easeInOut'
+                                    });
+                                }
+                            }
+                            targetBuilding.soldierText.setText(targetBuilding.soldiers.toString());
+                            soldierCountChanged = true;
+                        }
+                        
+                        // Destroy the soldier
+                        soldier.destroy();
+                        soldierCountChanged = true;
+                    } else {
+                        // Soldier is still active, keep it
+                        stillActiveSoldiers.push(soldier);
+                    }
+                } catch (error) {
+                    console.error("Error processing soldier:", error);
+                    // If there's an error, destroy the soldier to prevent future errors
+                    if (soldier && soldier.destroy) {
+                        soldier.destroy();
+                    }
+                    soldierCountChanged = true;
+                }
+            }
+            
+            // Replace the active soldiers array with only the still active ones
+            this.activeSoldiers = stillActiveSoldiers;
+            
+            // Update soldier counts if any soldiers reached their target or were destroyed
+            if (soldierCountChanged) {
+                this.calculateSoldierCounts();
+            }
+        }
 
         // Check for win/lose conditions
         this.checkGameOver();
-
-        // Update and check soldiers
-        this.activeSoldiers = this.activeSoldiers.filter(soldier => {
-            const reachedTarget = soldier.update(time, delta);
-            if (reachedTarget) {
-                // Handle individual soldier arrival
-                const targetBuilding = this.buildings.find(b => {
-                    const dx = b.x - soldier.targetX;
-                    const dy = b.y - soldier.targetY;
-                    const distanceSquared = dx * dx + dy * dy;
-                    return distanceSquared < 2500; // 50 pixel radius check
-                });
-                
-                if (targetBuilding) {
-                    if (targetBuilding.ownership === (soldier.isPlayerOwned ? 'player' : 'enemy')) {
-                        // Friendly building - add one troop
-                        targetBuilding.troops++;
-                    } else {
-                        // Enemy or neutral building - subtract one troop
-                        targetBuilding.troops--;
-                        // Check for capture
-                        if (targetBuilding.troops < 0) {
-                            targetBuilding.setOwnership(soldier.isPlayerOwned ? 'player' : 'enemy');
-                            targetBuilding.troops = Math.abs(targetBuilding.troops);
-                            
-                            // Visual feedback for capture
-                            this.tweens.add({
-                                targets: targetBuilding.building,
-                                scaleX: 1.2,
-                                scaleY: 1.2,
-                                duration: 200,
-                                yoyo: true,
-                                ease: 'Quad.easeInOut'
-                            });
-                        }
-                    }
-                    targetBuilding.troopText.setText(targetBuilding.troops.toString());
-                }
-                
-                soldier.destroy();
-                return false;
-            }
-            return true;
-        });
     }
 
     selectBuilding(building) {
@@ -516,9 +684,17 @@ class MainScene extends Phaser.Scene {
         if (!this.selectedBuilding || this.selectedBuilding === targetBuilding) return;
 
         const sourceBuilding = this.selectedBuilding; // Store the source building
-        const troopsToSend = sourceBuilding.sendTroops(targetBuilding);
-        if (troopsToSend <= 0) return;
-
+        
+        // Check if there are soldiers to send
+        if (sourceBuilding.soldiers <= 0) return;
+        
+        // Store the number of soldiers to send
+        const soldiersToSend = sourceBuilding.soldiers;
+        
+        // Remove soldiers from source building
+        sourceBuilding.soldiers = 0;
+        sourceBuilding.soldierText.setText('0');
+        
         // Calculate base spawn position
         const radius = 45; // Slightly larger than building radius
         const spreadAngle = Math.PI / 2; // 90 degrees spread
@@ -529,7 +705,7 @@ class MainScene extends Phaser.Scene {
         const angleToTarget = Math.atan2(dy, dx);
         
         // Create a delayed spawn for each soldier
-        for (let i = 0; i < troopsToSend; i++) {
+        for (let i = 0; i < soldiersToSend; i++) {
             const delay = (i * 100); // Spread spawns over time
             
             this.time.delayedCall(delay, () => {
@@ -545,6 +721,7 @@ class MainScene extends Phaser.Scene {
                 const targetOffsetX = (Math.random() * 40 - 20);
                 const targetOffsetY = (Math.random() * 40 - 20);
 
+                // Create soldier
                 const soldier = new Soldier(
                     this,
                     spawnX,
@@ -553,9 +730,17 @@ class MainScene extends Phaser.Scene {
                     targetBuilding.y + targetOffsetY,
                     sourceBuilding.isPlayerOwned
                 );
+                
+                // Add to active soldiers array
                 this.activeSoldiers.push(soldier);
+                
+                // Update soldier counts immediately after adding a soldier
+                this.calculateSoldierCounts();
             });
         }
+        
+        // Update soldier counts immediately after removing soldiers from source
+        this.calculateSoldierCounts();
     }
 }
 
