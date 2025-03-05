@@ -44,6 +44,13 @@ class Building extends Phaser.GameObjects.Container {
         this.ownership = ownership;
         this.isPlayerOwned = ownership === 'player';  // maintain backwards compatibility
 
+        // Add basic upgrade properties
+        this.level = 1;
+        this.isUpgrading = false;
+        this.upgradeProgress = 0;
+        this.upgradeTime = 3000; // 3 seconds to upgrade
+        this.lastClickTime = 0; // For double-click detection
+
         // Create building shape (circle)
         const color = this.getBuildingColor();
         this.building = scene.add.circle(0, 0, 40, color);
@@ -55,17 +62,33 @@ class Building extends Phaser.GameObjects.Container {
         this.selectionRing.setVisible(false);
         this.add(this.selectionRing);
 
-        // Create soldier counter text
-        this.soldierText = scene.add.text(0, 0, this.soldiers.toString(), {
+        // Create a new progress indicator using a graphics object
+        this.progressGraphics = scene.add.graphics();
+        this.progressGraphics.setVisible(false);
+        this.add(this.progressGraphics);
+
+        // Create soldier counter text (larger, at the center)
+        this.soldierText = scene.add.text(0, -8, this.soldiers.toString(), {
             fontSize: '24px',
             color: '#ffffff',
             fontFamily: 'Arial',
-            resolution: 2,           // Higher resolution for sharper text
-            antialias: false        // Disable antialiasing for crisp edges
+            resolution: 2,  // Good balance of crisp and clean
+            antialias: false // Disable antialiasing for sharper text
         });
         this.soldierText.setOrigin(0.5);
-        this.soldierText.setPosition(Math.round(this.soldierText.x), Math.round(this.soldierText.y)); // Ensure integer position
         this.add(this.soldierText);
+
+        // Create level indicator text (smaller, below the soldier count)
+        this.levelText = scene.add.text(0, 15, `Lvl ${this.level}`, {
+            fontSize: '12px',
+            color: '#ffffff',
+            fontFamily: 'Arial',
+            resolution: 2,  // Good balance of crisp and clean
+            antialias: true // Disable antialiasing for sharper text
+        });
+        this.levelText.setOrigin(0.5);
+        this.levelText.setVisible(this.ownership !== 'neutral'); // Only show for non-neutral buildings
+        this.add(this.levelText);
 
         // Make building clickable for both left and right clicks
         this.building.setInteractive();
@@ -81,12 +104,60 @@ class Building extends Phaser.GameObjects.Container {
         
         // Add new listeners
         this.building.on('pointerdown', (pointer) => {
+            const currentTime = Date.now();
+            
             if (pointer.rightButtonDown()) {
                 scene.handleRightClick(this);
             } else if (this.isPlayerOwned) {
-                scene.selectBuilding(this);
+                // Check for double click (less than 300ms between clicks)
+                if (currentTime - this.lastClickTime < 300) {
+                    this.startUpgrade();
+                } else {
+                    scene.selectBuilding(this);
+                }
+                this.lastClickTime = currentTime;
             }
         });
+    }
+    
+    // Simple method to start an upgrade
+    startUpgrade() {
+        // Only allow upgrading if not already upgrading
+        if (this.isUpgrading) return;
+        
+        // Calculate upgrade cost (5 soldiers per level)
+        const upgradeCost = 5 * this.level;
+        
+        // Check if we have enough soldiers
+        if (this.soldiers < upgradeCost) {
+            // Not enough soldiers - provide feedback
+            this.scene.cameras.main.shake(200, 0.005);
+            
+            // Flash soldier count red
+            this.scene.tweens.add({
+                targets: this.soldierText,
+                alpha: 0.2,
+                duration: 100,
+                yoyo: true,
+                repeat: 1,
+                ease: 'Linear'
+            });
+            return;
+        }
+        
+        // Deduct soldiers for the upgrade
+        this.soldiers -= upgradeCost;
+        this.soldierText.setText(this.soldiers.toString());
+        
+        // Start the upgrade process
+        this.isUpgrading = true;
+        this.upgradeProgress = 0;
+        this.progressGraphics.setVisible(true);
+        
+        // Update soldier counts
+        if (this.scene.calculateSoldierCounts) {
+            this.scene.calculateSoldierCounts();
+        }
     }
     
     // Override destroy method to ensure proper cleanup
@@ -111,8 +182,58 @@ class Building extends Phaser.GameObjects.Container {
 
     update(time, delta, scene) {
         const now = Date.now();
-        if (now - this.lastUpdate >= 1000) {  // Every second
-            if (this.ownership !== 'neutral') {  // Only non-neutral buildings generate soldiers
+        const elapsedMs = now - this.lastUpdate;
+        
+        // Handle upgrade progress if currently upgrading
+        if (this.isUpgrading) {
+            // Update progress based on elapsed time
+            this.upgradeProgress += elapsedMs;
+            
+            // Calculate progress percentage
+            const progressRatio = Math.min(this.upgradeProgress / this.upgradeTime, 1);
+            
+            // Draw progress circle (clear previous and redraw)
+            this.progressGraphics.clear();
+            this.progressGraphics.lineStyle(5, 0x00ff00, 0.8);
+            
+            // Draw an arc for progress visualization (use radians)
+            const startAngle = -Math.PI / 2; // Start from top
+            const endAngle = startAngle + (Math.PI * 2 * progressRatio);
+            this.progressGraphics.beginPath();
+            this.progressGraphics.arc(0, 0, 48, startAngle, endAngle, false);
+            this.progressGraphics.strokePath();
+            
+            // Check if upgrade is complete
+            if (this.upgradeProgress >= this.upgradeTime) {
+                // Upgrade complete
+                this.level++;
+                this.levelText.setText(`Lvl ${this.level}`);
+                
+                this.isUpgrading = false;
+                this.progressGraphics.clear();
+                this.progressGraphics.setVisible(false);
+                
+                // Visual feedback for completed upgrade
+                scene.tweens.add({
+                    targets: this,
+                    scaleX: 1.2,
+                    scaleY: 1.2,
+                    duration: 200,
+                    yoyo: true,
+                    ease: 'Quad.easeInOut'
+                });
+            }
+        }
+        
+        // Regular building update (soldier generation)
+        if (this.ownership !== 'neutral' && !this.isUpgrading) {
+            // Calculate soldier generation time based on level
+            // Each level makes generation 15% faster
+            const baseGenerationTime = 1000; // 1 second base time
+            const generationTime = baseGenerationTime * Math.pow(0.85, this.level - 1);
+            
+            // Check if enough time has passed to generate a soldier
+            if (elapsedMs >= generationTime) {
                 this.soldiers++;
                 this.soldierText.setText(this.soldiers.toString());
                 
@@ -120,7 +241,11 @@ class Building extends Phaser.GameObjects.Container {
                 if (scene && scene.calculateSoldierCounts) {
                     scene.calculateSoldierCounts();
                 }
+                
+                this.lastUpdate = now;
             }
+        } else {
+            // For neutral or upgrading buildings, just update the timestamp
             this.lastUpdate = now;
         }
     }
@@ -129,6 +254,9 @@ class Building extends Phaser.GameObjects.Container {
         this.ownership = newOwnership;
         this.isPlayerOwned = newOwnership === 'player';
         this.building.setFillStyle(this.getBuildingColor());
+        
+        // Show/hide level text based on ownership
+        this.levelText.setVisible(this.ownership !== 'neutral');
         
         // Update soldier counts when ownership changes
         if (this.scene && this.scene.calculateSoldierCounts) {
@@ -590,6 +718,13 @@ class MainScene extends Phaser.Scene {
                 // Skip if soldier is undefined or has been destroyed
                 if (!soldier || !soldier.active) continue;
                 
+                // Check if this is a placeholder soldier (it won't have an update method)
+                if (!soldier.update) {
+                    // Keep placeholder soldiers in the array
+                    stillActiveSoldiers.push(soldier);
+                    continue;
+                }
+                
                 try {
                     const reachedTarget = soldier.update(time, delta);
                     
@@ -704,6 +839,30 @@ class MainScene extends Phaser.Scene {
         const dy = targetBuilding.y - sourceBuilding.y;
         const angleToTarget = Math.atan2(dy, dx);
         
+        // Create all soldiers first before calling calculateSoldierCounts
+        let spawnedSoldiers = 0;
+        
+        // Store the placeholder soldiers so we can remove them as real soldiers are created
+        const placeholderSoldiers = [];
+        
+        // We'll add placeholder soldiers to activeSoldiers immediately
+        // This ensures they're counted correctly from the start
+        for (let i = 0; i < soldiersToSend; i++) {
+            // Create invisible placeholder soldiers that will be replaced by the actual soldiers
+            const placeholderSoldier = {
+                active: true,
+                isPlayerOwned: sourceBuilding.isPlayerOwned,
+                // This soldier isn't displayed but is counted
+                destroy: function() { this.active = false; }
+            };
+            
+            this.activeSoldiers.push(placeholderSoldier);
+            placeholderSoldiers.push(placeholderSoldier);
+        }
+        
+        // Calculate counts now that we've added placeholder soldiers
+        this.calculateSoldierCounts();
+        
         // Create a delayed spawn for each soldier
         for (let i = 0; i < soldiersToSend; i++) {
             const delay = (i * 100); // Spread spawns over time
@@ -734,13 +893,23 @@ class MainScene extends Phaser.Scene {
                 // Add to active soldiers array
                 this.activeSoldiers.push(soldier);
                 
-                // Update soldier counts immediately after adding a soldier
-                this.calculateSoldierCounts();
+                // Remove one placeholder soldier as we're replacing it with a real one
+                if (placeholderSoldiers.length > 0) {
+                    const placeholder = placeholderSoldiers.pop();
+                    placeholder.active = false;
+                    // Note: We don't need to explicitly remove it from activeSoldiers
+                    // as the update loop will filter out inactive soldiers
+                }
+                
+                // Count how many soldiers we've spawned
+                spawnedSoldiers++;
+                
+                // Only call calculateSoldierCounts once all soldiers have been spawned
+                if (spawnedSoldiers === soldiersToSend) {
+                    this.calculateSoldierCounts();
+                }
             });
         }
-        
-        // Update soldier counts immediately after removing soldiers from source
-        this.calculateSoldierCounts();
     }
 }
 
