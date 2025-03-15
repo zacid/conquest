@@ -270,6 +270,280 @@ class Building extends Phaser.GameObjects.Container {
     }
 }
 
+class AIController {
+    constructor(scene) {
+        this.scene = scene;
+        this.lastDecisionTime = 0;
+        this.decisionInterval = 1000; // Make decisions every 1 second
+        this.difficultyLevel = 'medium'; // 'easy', 'medium', 'hard'
+        this.aggressiveness = 0.7; // 0-1, higher means more aggressive
+        this.expansionPriority = 0.8; // 0-1, higher means prioritize neutral buildings
+        
+        // Difficulty settings
+        this.difficultySettings = {
+            easy: {
+                decisionInterval: 2000,
+                aggressiveness: 0.4,
+                expansionPriority: 0.6,
+                minSoldiersToKeep: 0.5, // Keep at least 50% of soldiers for defense
+                targetAnalysisDepth: 1
+            },
+            medium: {
+                decisionInterval: 1000,
+                aggressiveness: 0.7,
+                expansionPriority: 0.8,
+                minSoldiersToKeep: 0.3, // Keep at least 30% of soldiers for defense
+                targetAnalysisDepth: 2
+            },
+            hard: {
+                decisionInterval: 500,
+                aggressiveness: 0.9,
+                expansionPriority: 0.9,
+                minSoldiersToKeep: 0.2, // Keep at least 20% of soldiers for defense
+                targetAnalysisDepth: 3
+            }
+        };
+        
+        // Apply difficulty settings
+        this.applyDifficultySettings();
+    }
+    
+    applyDifficultySettings() {
+        const settings = this.difficultySettings[this.difficultyLevel];
+        this.decisionInterval = settings.decisionInterval;
+        this.aggressiveness = settings.aggressiveness;
+        this.expansionPriority = settings.expansionPriority;
+        this.minSoldiersToKeep = settings.minSoldiersToKeep;
+        this.targetAnalysisDepth = settings.targetAnalysisDepth;
+    }
+    
+    setDifficulty(level) {
+        if (this.difficultySettings[level]) {
+            this.difficultyLevel = level;
+            this.applyDifficultySettings();
+        }
+    }
+    
+    update(time) {
+        // Only make decisions at certain intervals
+        if (time - this.lastDecisionTime < this.decisionInterval) {
+            return;
+        }
+        
+        this.lastDecisionTime = time;
+        this.makeDecisions();
+    }
+    
+    makeDecisions() {
+        // Get all enemy buildings
+        const enemyBuildings = this.getEnemyBuildings();
+        
+        // If no buildings, can't do anything
+        if (enemyBuildings.length === 0) return;
+        
+        // For each enemy building, decide what to do
+        enemyBuildings.forEach(building => {
+            this.decideForBuilding(building);
+        });
+    }
+    
+    getEnemyBuildings() {
+        return this.scene.buildings.filter(building => 
+            building && building.active && building.ownership === 'enemy');
+    }
+    
+    getPlayerBuildings() {
+        return this.scene.buildings.filter(building => 
+            building && building.active && building.ownership === 'player');
+    }
+    
+    getNeutralBuildings() {
+        return this.scene.buildings.filter(building => 
+            building && building.active && building.ownership === 'neutral');
+    }
+    
+    decideForBuilding(building) {
+        // Skip if building is upgrading
+        if (building.isUpgrading) return;
+        
+        // Skip if not enough soldiers
+        if (building.soldiers <= 1) return;
+        
+        // Decide whether to attack, expand, or upgrade
+        const decision = this.evaluateStrategicOptions(building);
+        
+        // Execute the decision
+        switch (decision.action) {
+            case 'attack':
+                this.attackTarget(building, decision.target, decision.soldierCount);
+                break;
+            case 'expand':
+                this.expandToNeutral(building, decision.target, decision.soldierCount);
+                break;
+            case 'upgrade':
+                if (!building.isUpgrading && building.level < 3) {
+                    building.startUpgrade();
+                }
+                break;
+            case 'hold':
+                // Do nothing, hold position
+                break;
+        }
+    }
+    
+    evaluateStrategicOptions(building) {
+        // Get potential targets
+        const playerBuildings = this.getPlayerBuildings();
+        const neutralBuildings = this.getNeutralBuildings();
+        
+        // Calculate threat level (how many player buildings/soldiers are nearby)
+        const threatLevel = this.calculateThreatLevel(building, playerBuildings);
+        
+        // Calculate expansion value (how valuable are nearby neutral buildings)
+        const expansionTargets = this.evaluateExpansionTargets(building, neutralBuildings);
+        
+        // Calculate attack value (how valuable are nearby player buildings to attack)
+        const attackTargets = this.evaluateAttackTargets(building, playerBuildings);
+        
+        // Decide how many soldiers to send (keep some for defense based on threat)
+        const maxSoldiersToSend = Math.max(1, Math.floor(building.soldiers * (1 - this.minSoldiersToKeep * threatLevel)));
+        
+        // If we can't send any soldiers, hold position
+        if (maxSoldiersToSend <= 1) {
+            return { action: 'hold' };
+        }
+        
+        // Decide whether to upgrade
+        if (building.level < 3 && building.soldiers > 15 && Math.random() < 0.1) {
+            return { action: 'upgrade' };
+        }
+        
+        // Decide whether to attack or expand based on our strategy settings
+        // Higher aggressiveness favors attacking, higher expansionPriority favors expanding
+        
+        // If we have good expansion targets and our expansion priority is high
+        if (expansionTargets.length > 0 && Math.random() < this.expansionPriority) {
+            const target = expansionTargets[0];
+            return {
+                action: 'expand',
+                target: target.building,
+                soldierCount: Math.min(maxSoldiersToSend, Math.ceil(target.building.soldiers * 1.5))
+            };
+        }
+        
+        // If we have good attack targets and our aggressiveness is high
+        if (attackTargets.length > 0 && Math.random() < this.aggressiveness) {
+            const target = attackTargets[0];
+            return {
+                action: 'attack',
+                target: target.building,
+                soldierCount: Math.min(maxSoldiersToSend, Math.ceil(target.building.soldiers * 1.5))
+            };
+        }
+        
+        // Default: hold position
+        return { action: 'hold' };
+    }
+    
+    calculateThreatLevel(building, playerBuildings) {
+        // Calculate a threat level from 0-1 based on proximity and strength of player buildings
+        let threatLevel = 0;
+        
+        playerBuildings.forEach(playerBuilding => {
+            const distance = Phaser.Math.Distance.Between(
+                building.x, building.y, 
+                playerBuilding.x, playerBuilding.y
+            );
+            
+            // Buildings closer than 300 pixels are considered threats
+            if (distance < 300) {
+                // Closer buildings and those with more soldiers are bigger threats
+                const distanceFactor = 1 - (distance / 300); // 0-1, higher for closer buildings
+                const strengthFactor = playerBuilding.soldiers / 30; // Normalize by assuming 30 is a lot
+                
+                threatLevel += distanceFactor * strengthFactor;
+            }
+        });
+        
+        // Cap threat level at 1
+        return Math.min(1, threatLevel);
+    }
+    
+    evaluateExpansionTargets(building, neutralBuildings) {
+        // Evaluate and rank neutral buildings as expansion targets
+        const targets = [];
+        
+        neutralBuildings.forEach(neutralBuilding => {
+            const distance = Phaser.Math.Distance.Between(
+                building.x, building.y, 
+                neutralBuilding.x, neutralBuilding.y
+            );
+            
+            // Calculate a score based on distance and soldiers needed to capture
+            const distanceScore = 1000 / (distance + 1); // Higher for closer buildings
+            const soldierScore = 20 / (neutralBuilding.soldiers + 1); // Higher for buildings with fewer soldiers
+            
+            // Calculate if we have enough soldiers to reasonably capture this building
+            const canCapture = building.soldiers > neutralBuilding.soldiers * 1.2;
+            
+            if (canCapture) {
+                targets.push({
+                    building: neutralBuilding,
+                    score: distanceScore * soldierScore,
+                    distance: distance
+                });
+            }
+        });
+        
+        // Sort by score (highest first)
+        return targets.sort((a, b) => b.score - a.score);
+    }
+    
+    evaluateAttackTargets(building, playerBuildings) {
+        // Evaluate and rank player buildings as attack targets
+        const targets = [];
+        
+        playerBuildings.forEach(playerBuilding => {
+            const distance = Phaser.Math.Distance.Between(
+                building.x, building.y, 
+                playerBuilding.x, playerBuilding.y
+            );
+            
+            // Calculate a score based on distance, soldiers needed to capture, and strategic value
+            const distanceScore = 1000 / (distance + 1); // Higher for closer buildings
+            const soldierScore = 30 / (playerBuilding.soldiers + 1); // Higher for buildings with fewer soldiers
+            const levelScore = playerBuilding.level * 2; // Higher for higher level buildings (strategic value)
+            
+            // Calculate if we have enough soldiers to reasonably attack this building
+            const canAttack = building.soldiers > playerBuilding.soldiers * 1.5;
+            
+            if (canAttack) {
+                targets.push({
+                    building: playerBuilding,
+                    score: distanceScore * soldierScore * levelScore,
+                    distance: distance
+                });
+            }
+        });
+        
+        // Sort by score (highest first)
+        return targets.sort((a, b) => b.score - a.score);
+    }
+    
+    attackTarget(sourceBuilding, targetBuilding, soldierCount) {
+        // Send soldiers from source building to target building
+        if (sourceBuilding && targetBuilding && soldierCount > 0) {
+            // Use the same mechanism the player uses to send soldiers
+            this.scene.sendSoldiers(sourceBuilding, targetBuilding, soldierCount);
+        }
+    }
+    
+    expandToNeutral(sourceBuilding, targetBuilding, soldierCount) {
+        // Same as attack, but targeting neutral buildings
+        this.attackTarget(sourceBuilding, targetBuilding, soldierCount);
+    }
+}
+
 class MainScene extends Phaser.Scene {
     constructor() {
         super({ key: 'MainScene' });
@@ -459,6 +733,13 @@ class MainScene extends Phaser.Scene {
         
         // Calculate initial soldier counts
         this.calculateSoldierCounts();
+        
+        // Initialize AI controller
+        this.aiController = new AIController(this);
+        
+        // Set AI difficulty based on game settings or player preference
+        // You could add a UI for this or set it based on game progression
+        this.aiController.setDifficulty('medium');
     }
     
     createSoldierCountUI() {
@@ -794,6 +1075,11 @@ class MainScene extends Phaser.Scene {
 
         // Check for win/lose conditions
         this.checkGameOver();
+
+        // Update AI controller
+        if (this.aiController) {
+            this.aiController.update(time);
+        }
     }
 
     selectBuilding(building) {
@@ -823,12 +1109,26 @@ class MainScene extends Phaser.Scene {
         // Check if there are soldiers to send
         if (sourceBuilding.soldiers <= 0) return;
         
-        // Store the number of soldiers to send
-        const soldiersToSend = sourceBuilding.soldiers;
+        // Send all soldiers from the selected building to the target
+        this.sendSoldiers(sourceBuilding, targetBuilding, sourceBuilding.soldiers);
         
-        // Remove soldiers from source building
-        sourceBuilding.soldiers = 0;
-        sourceBuilding.soldierText.setText('0');
+        // Deselect the building after sending soldiers
+        sourceBuilding.setSelected(false);
+        this.selectedBuilding = null;
+    }
+
+    // Add a method to send soldiers that both player and AI can use
+    sendSoldiers(sourceBuilding, targetBuilding, count) {
+        if (!sourceBuilding || !targetBuilding || count <= 0) return;
+        
+        // Ensure we don't send more soldiers than we have
+        const soldiersToSend = Math.min(sourceBuilding.soldiers, count);
+        
+        if (soldiersToSend <= 0) return;
+        
+        // Reduce soldiers from source building
+        sourceBuilding.soldiers -= soldiersToSend;
+        sourceBuilding.soldierText.setText(sourceBuilding.soldiers.toString());
         
         // Calculate base spawn position
         const radius = 45; // Slightly larger than building radius
@@ -851,7 +1151,7 @@ class MainScene extends Phaser.Scene {
             // Create invisible placeholder soldiers that will be replaced by the actual soldiers
             const placeholderSoldier = {
                 active: true,
-                isPlayerOwned: sourceBuilding.isPlayerOwned,
+                isPlayerOwned: sourceBuilding.ownership === 'player',
                 // This soldier isn't displayed but is counted
                 destroy: function() { this.active = false; }
             };
@@ -865,7 +1165,7 @@ class MainScene extends Phaser.Scene {
         
         // Create a delayed spawn for each soldier
         for (let i = 0; i < soldiersToSend; i++) {
-            const delay = (i * 100); // Spread spawns over time
+            const delay = (i * 50); // Spread spawns over time
             
             this.time.delayedCall(delay, () => {
                 // Calculate random position in an arc behind the building
@@ -887,8 +1187,11 @@ class MainScene extends Phaser.Scene {
                     spawnY,
                     targetBuilding.x + targetOffsetX,
                     targetBuilding.y + targetOffsetY,
-                    sourceBuilding.isPlayerOwned
+                    sourceBuilding.ownership === 'player'
                 );
+                
+                // Set target building for collision detection
+                soldier.targetBuilding = targetBuilding;
                 
                 // Add to active soldiers array
                 this.activeSoldiers.push(soldier);
